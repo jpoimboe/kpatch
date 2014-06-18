@@ -8,7 +8,7 @@ struct lookup_result {
 	unsigned long size;
 };
 
-struct lookup_table *lookup_open(char *path);
+struct lookup_table *lookup_open(char *obj, char *symvers);
 void lookup_close(struct lookup_table *table);
 int lookup_local_symbol(struct lookup_table *table, char *name, char *hint,
                         struct lookup_result *result);

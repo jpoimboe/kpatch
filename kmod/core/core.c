@@ -54,8 +54,10 @@
 #error "CONFIG_FUNCTION_TRACER, CONFIG_HAVE_FENTRY, CONFIG_MODULES, CONFIG_SYSFS, CONFIG_KALLSYMS_ALL kernel config options are required"
 #endif
 
-#define KPATCH_HASH_BITS 8
-static DEFINE_HASHTABLE(kpatch_func_hash, KPATCH_HASH_BITS);
+static DEFINE_HASHTABLE(kpatch_func_hash, 8);
+static DEFINE_HASHTABLE(kpatch_shadow_hash, 12);
+
+static DEFINE_SPINLOCK(kpatch_shadow_lock);
 
 static DEFINE_SEMAPHORE(kpatch_mutex);
 
@@ -90,6 +92,75 @@ struct kpatch_kallsyms_args {
 	}								\
 }
 
+struct kpatch_shadow {
+	struct hlist_node node;
+	void *obj;
+	char *var;
+	void *data;
+};
+
+void *kpatch_shadow_create(void *obj, char *var, gfp_t gfp)
+{
+	unsigned long flags;
+	struct kpatch_shadow *shadow;
+
+	shadow = kmalloc(sizeof(*shadow), gfp);
+	if (!shadow)
+		return NULL;
+
+	shadow->obj = obj;
+	shadow->var = kstrdup(var, gfp);
+	shadow->data = NULL;
+
+	spin_lock_irqsave(&kpatch_shadow_lock, flags);
+	hash_add(kpatch_shadow_hash, &shadow->node, (unsigned long)obj);
+	spin_unlock_irqrestore(&kpatch_shadow_lock, flags);
+
+	return &shadow->data;
+}
+EXPORT_SYMBOL_GPL(kpatch_shadow_create);
+
+void *kpatch_shadow_destroy(void *obj, char *var)
+{
+	unsigned long flags;
+	struct kpatch_shadow *shadow;
+	struct hlist_node *safe;
+	void *data = NULL;
+
+	spin_lock_irqsave(&kpatch_shadow_lock, flags);
+	hash_for_each_possible_safe(kpatch_shadow_hash, shadow, safe, node,
+				    (unsigned long)obj) {
+		if (shadow->obj == obj && !strcmp(shadow->var, var)) {
+			data = shadow->data;
+			hash_del(&shadow->node);
+			kfree(shadow->var);
+			kfree(shadow);
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&kpatch_shadow_lock, flags);
+	return data;
+}
+EXPORT_SYMBOL_GPL(kpatch_shadow_destroy);
+
+void *kpatch_shadow_get(void *obj, char *var)
+{
+	unsigned long flags;
+	struct kpatch_shadow *shadow;
+
+	spin_lock_irqsave(&kpatch_shadow_lock, flags);
+	hash_for_each_possible(kpatch_shadow_hash, shadow, node,
+			       (unsigned long)obj) {
+		if (shadow->obj == obj && !strcmp(shadow->var, var)) {
+			spin_unlock_irqrestore(&kpatch_shadow_lock, flags);
+			return shadow->data;
+		}
+	}
+	spin_unlock_irqrestore(&kpatch_shadow_lock, flags);
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(kpatch_shadow_get);
 
 /*
  * The kpatch core module has a state machine which allows for proper

@@ -3,6 +3,7 @@
 
 #include <linux/compiler.h>
 #include <linux/jiffies.h>
+#include "kpatch.h"
 
 typedef void (*kpatch_loadcall_t)(void);
 typedef void (*kpatch_unloadcall_t)(void);
@@ -113,6 +114,71 @@ struct kpatch_unload {
 ({ \
 	if (jiffies) \
 		printk(_fmt, ## __VA_ARGS__); \
+})
+
+
+/*
+ * KPATCH_SHADOW_* macros
+ *
+ * These macros can be used to add new "shadow" fields to existing data
+ * structures.
+ *
+ *
+ * For example, to allocate a "newpid" variable and associate it with an
+ * instance of task_struct:
+ *
+ * struct tast_struct *tsk = current;
+ * int *newpid;
+ * static int pidctr = 0;
+ * KPATCH_SHADOW_CREATE(tsk, newpid);
+ * if (newpid)
+ * 	*newpid = ctr++;
+ *
+ * To retrieve it:
+ *
+ * int *newpid;
+ * KPATCH_SHADOW_GET(tsk, newpid);
+ * if (newpid)
+ * 	printk("task newpid = %d\n", *newpid);
+ *
+ * To free it:
+ *
+ * int *newpid;
+ * KPATCH_SHADOW_DESTROY(tsk, newpid);
+ *
+ *
+ * NOTICE: To use this feature, you have to tell kpatch-build exactly which
+ * object files are affected by using the -t option.  For example, if the patch
+ * modifies fs/proc/array.c, kernel/exit.c, and kernel/fork.c:
+ *
+ * kpatch-build -t fs/proc/array.o -t kernel/exit.o -t kernel/fork.o my.patch
+ *
+ * This limitation is caused by the fact that the kpatch core module
+ * (kpatch.ko) is a module, so the link step (when compiling the patched
+ * kernel) fails when it can't link to the kpatch_shadow_* functions.  If the
+ * core module is statically compiled into the kernel, this limitation goes
+ * away.
+ */
+#define KPATCH_SHADOW_CREATE(obj, var, gfp) ({			\
+	typeof(*var) **__shadow;				\
+	var = NULL;						\
+	__shadow = kpatch_shadow_create(obj, #var, gfp);	\
+	if (__shadow) {						\
+		*__shadow = kmalloc(sizeof(**__shadow), gfp);	\
+		if (!*__shadow)					\
+			kpatch_shadow_destroy(obj, #var);	\
+		var = *__shadow;				\
+	}							\
+})
+
+#define KPATCH_SHADOW_DESTROY(obj, var) ({			\
+	var = kpatch_shadow_destroy(obj, #var);			\
+	if (var)						\
+		kfree(var);					\
+})
+
+#define KPATCH_SHADOW_GET(obj, var) ({				\
+	var = kpatch_shadow_get(obj, #var);			\
 })
 
 #endif /* __KPATCH_MACROS_H_ */

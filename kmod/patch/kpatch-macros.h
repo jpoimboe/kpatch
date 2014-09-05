@@ -123,23 +123,26 @@ struct kpatch_unload {
  * These macros can be used to add new "shadow" fields to existing data
  * structures.
  *
- *
- * For example, to allocate a "newpid" variable and associate it with an
- * instance of task_struct:
+ * For example, to allocate a "newpid" variable associated with an instance of
+ * task_struct, and assign it a value of 1000:
  *
  * struct tast_struct *tsk = current;
  * int *newpid;
- * static int pidctr = 0;
- * KPATCH_SHADOW_CREATE(tsk, newpid);
+ * KPATCH_SHADOW_CREATE(tsk, newpid, GFP_KERNEL);
  * if (newpid)
- * 	*newpid = ctr++;
+ * 	*newpid = 1000;
  *
- * To retrieve it:
+ * To retrieve a pointer to the variable:
  *
+ * struct tast_struct *tsk = current;
  * int *newpid;
  * KPATCH_SHADOW_GET(tsk, newpid);
  * if (newpid)
- * 	printk("task newpid = %d\n", *newpid);
+ * 	printk("task newpid = %d\n", *newpid); // prints "1000"
+ *
+ * Notice that the name of the variable specifies the name of the shadow
+ * variable.  In this case, the naming of the newpid variable specifies that
+ * the shadow variable is named "newpid".
  *
  * To free it:
  *
@@ -159,6 +162,20 @@ struct kpatch_unload {
  * core module is statically compiled into the kernel, this limitation goes
  * away.
  */
+
+/*
+ * KPATCH_SHADOW_CREATE macro
+ *
+ * Allocates a shadow variable named "var" associated with the obj struct and
+ * updates var with a pointer to the new variable.
+ *
+ * obj: Pointer to the parent struct
+ *
+ * var: Unassigned pointer for the shadow variable.  The name of the variable
+ * specifies the name of the shadow variable.
+ *
+ * gfp: gfp flags to pass to kmalloc
+ */
 #define KPATCH_SHADOW_CREATE(obj, var, gfp) ({			\
 	typeof(*var) **__shadow;				\
 	var = NULL;						\
@@ -171,12 +188,33 @@ struct kpatch_unload {
 	}							\
 })
 
+/*
+ * KPATCH_SHADOW_DESTROY macro
+ *
+ * Frees a shadow variable named "var" associated with the obj struct.
+ *
+ * obj: Pointer to the parent struct
+ *
+ * var: Unassigned pointer for the shadow variable.  The name of the variable
+ * specifies the name of the shadow variable.
+ */
 #define KPATCH_SHADOW_DESTROY(obj, var) ({			\
 	var = kpatch_shadow_destroy(obj, #var);			\
 	if (var)						\
 		kfree(var);					\
 })
 
+/* KPATCH_SHADOW_GET macro
+ *
+ * Retrieves a shadow variable named "var" associated with the obj struct and
+ * updates var with a pointer to the variable.  If the shadow variable doesn't
+ * exist, var is set to NULL.
+ *
+ * obj: Pointer to the parent struct
+ *
+ * var: Unassigned pointer for the shadow variable.  The name of the variable
+ * specifies the name of the shadow variable.
+ */
 #define KPATCH_SHADOW_GET(obj, var) ({				\
 	var = kpatch_shadow_get(obj, #var);			\
 })

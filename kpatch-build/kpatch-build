@@ -389,6 +389,7 @@ patch -N -p1 --dry-run < "$PATCHFILE" || die "source patch file failed to apply"
 cp "$PATCHFILE" "$APPLIEDPATCHFILE" || die
 cp -LR "$DATADIR/patch" "$TEMPDIR" || die
 export KCFLAGS="-I$DATADIR/patch -ffunction-sections -fdata-sections"
+export LDFLAGS_vmlinux="--warn-unresolved-symbols"
 
 echo "Building original kernel"
 make mrproper >> "$LOGFILE" 2>&1 || die

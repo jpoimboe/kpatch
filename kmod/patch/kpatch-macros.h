@@ -149,18 +149,6 @@ struct kpatch_unload {
  * int *newpid;
  * KPATCH_SHADOW_DESTROY(tsk, newpid);
  *
- *
- * NOTICE: To use this feature, you have to tell kpatch-build exactly which
- * object files are affected by using the -t option.  For example, if the patch
- * modifies fs/proc/array.c, kernel/exit.c, and kernel/fork.c:
- *
- * kpatch-build -t fs/proc/array.o -t kernel/exit.o -t kernel/fork.o my.patch
- *
- * This limitation is caused by the fact that the kpatch core module
- * (kpatch.ko) is a module, so the link step (when compiling the patched
- * kernel) fails when it can't link to the kpatch_shadow_* functions.  If the
- * core module is statically compiled into the kernel, this limitation goes
- * away.
  */
 
 /*

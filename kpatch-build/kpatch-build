@@ -49,6 +49,7 @@ TEMPDIR=
 APPLIEDPATCHFILE="kpatch.patch"
 DEBUG=0
 SKIPGCCCHECK=0
+PATCHTYPE="kpatch"
 
 warn() {
 	echo "ERROR: $1" >&2
@@ -71,6 +72,7 @@ die() {
 }
 
 cleanup() {
+	rm -f "$SRCDIR/.scmversion"
 	if [[ -e "$SRCDIR/$APPLIEDPATCHFILE" ]]; then
 		patch -p1 -R -d "$SRCDIR" < "$SRCDIR/$APPLIEDPATCHFILE" &> /dev/null
 		rm -f "$SRCDIR/$APPLIEDPATCHFILE"
@@ -317,7 +319,7 @@ elif [[ $DISTRO = ubuntu ]] || [[ $DISTRO = debian ]]; then
 	if [[ $DISTRO = ubuntu ]]; then
 		[[ -e "$VMLINUX" ]] || die "linux-image-$ARCHVERSION-dbgsym not installed"
 
-        elif [[ $DISTRO = debian ]]; then
+	elif [[ $DISTRO = debian ]]; then
 		[[ -e "$VMLINUX" ]] || die "linux-image-$ARCHVERSION-dbg not installed"
 	fi
 
@@ -364,7 +366,7 @@ else
 
 		clean_cache
 
-		mv "$(rpm --eval %{_builddir})"/kernel-*/linux-"$ARCHVERSION" "$SRCDIR" >> "$LOGFILE" 2>&1 || die
+		mv "$(rpm --eval %{_builddir})"/kernel-*/linux-"${ARCHVERSION%.*}"*"${ARCHVERSION##*.}" "$SRCDIR" >> "$LOGFILE" 2>&1 || die
 
 		cp "$SRCDIR/.config" "$OBJDIR" || die
 		if [[ "$ARCHVERSION" == *-* ]]; then
@@ -397,7 +399,7 @@ else
 		# The linux-source packages are formatted like the following for:
 		# ubuntu: linux-source-3.13.0_3.13.0-24.46_all.deb
 		# debian: linux-source-3.14_3.14.7-1_all.deb
-		pkgver="$KVER_$(dpkg-query -W -f='${Version}' linux-image-$ARCHVERSION)"
+		pkgver="${KVER}_$(dpkg-query -W -f='${Version}' linux-image-$ARCHVERSION)"
 		pkgname="linux-source-${pkgver}_all"
 
 		cd $TEMPDIR
@@ -433,6 +435,7 @@ cp -LR "$DATADIR/patch" "$TEMPDIR" || die
 export KCFLAGS="-I$DATADIR/patch -ffunction-sections -fdata-sections"
 
 echo "Building original kernel"
+./scripts/setlocalversion --save-scmversion || die
 make mrproper >> "$LOGFILE" 2>&1 || die
 CROSS_COMPILE="$TOOLSDIR/kpatch-gcc " make "-j$CPUS" $TARGETS "O=$OBJDIR" >> "$LOGFILE" 2>&1 || die
 
@@ -460,8 +463,14 @@ do
 	cp -f "$OBJDIR/$i" "$TEMPDIR/patched/$i" || die
 done
 
+# Detect patching type
+if grep -q "CONFIG_LIVEPATCH=y" "$CONFIGFILE"; then
+	PATCHTYPE="livepatch"
+fi
+echo "Detected patch type: $PATCHTYPE"
+
 echo "Extracting new and modified ELF sections"
-cd "$TEMPDIR/orig"
+cd "$TEMPDIR/patched"
 FILES="$(find * -type f)"
 cd "$TEMPDIR"
 mkdir output
@@ -480,21 +489,28 @@ for i in $FILES; do
 	cd $TEMPDIR
 	debugopt=
 	[[ $DEBUG -eq 1 ]] && debugopt=-d
-	"$TOOLSDIR"/create-diff-object $debugopt "orig/$i" "patched/$i" "$KOBJFILE" "output/$i" 2>&1 |tee -a "$LOGFILE"
-	rc="${PIPESTATUS[0]}"
-	if [[ $rc = 139 ]]; then
-		warn "create-diff-object SIGSEGV"
-		if ls core* &> /dev/null; then
-			cp core* /tmp
-			die "core file at /tmp/$(ls core*)"
+	livepatchopt=
+	[[ $PATCHTYPE == "livepatch" ]] && livepatchopt=-l
+	if [[ -e "orig/$i" ]]; then
+		"$TOOLSDIR"/create-diff-object $debugopt $livepatchopt "orig/$i" "patched/$i" "$KOBJFILE" "output/$i" 2>&1 |tee -a "$LOGFILE"
+		rc="${PIPESTATUS[0]}"
+		if [[ $rc = 139 ]]; then
+			warn "create-diff-object SIGSEGV"
+			if ls core* &> /dev/null; then
+				cp core* /tmp
+				die "core file at /tmp/$(ls core*)"
+			fi
+			die "no core file found, run 'ulimit -c unlimited' and try to recreate"
 		fi
-		die "no core file found, run 'ulimit -c unlimited' and try to recreate"
-	fi
-	# create-diff-object returns 3 if no functional change is found
-	[[ $rc -eq 0 ]] || [[ $rc -eq 3 ]] || ERROR=$(expr $ERROR "+" 1)
-	if [[ $rc -eq 0 ]]; then
-		[[ -n $ERROR_IF_DIFF ]] && die $ERROR_IF_DIFF
-		CHANGED=1
+		# create-diff-object returns 3 if no functional change is found
+		[[ $rc -eq 0 ]] || [[ $rc -eq 3 ]] || ERROR=$(expr $ERROR "+" 1)
+		if [[ $rc -eq 0 ]]; then
+			[[ -n $ERROR_IF_DIFF ]] && die $ERROR_IF_DIFF
+			CHANGED=1
+			objnames[$KOBJFILE]=1
+		fi
+	else
+		cp -f "patched/$i" "output/$i"
 		objnames[$KOBJFILE]=1
 	fi
 done
@@ -511,19 +527,24 @@ echo -n "Patched objects:"
 for i in "${!objnames[@]}"; do echo -n " $(basename $i)"; done
 echo
 
-echo "Building patch module: kpatch-$PATCHNAME.ko"
+echo "Building patch module: $PATCHTYPE-$PATCHNAME.ko"
 cp "$OBJDIR/.config" "$SRCDIR"
 cd "$SRCDIR"
 make prepare >> "$LOGFILE" 2>&1 || die
 cd "$TEMPDIR/output"
 ld -r -o ../patch/output.o $(find . -name "*.o") >> "$LOGFILE" 2>&1 || die
-md5sum ../patch/output.o | awk '{printf "%s\0", $1}' > checksum.tmp || die
-objcopy --add-section .kpatch.checksum=checksum.tmp --set-section-flags .kpatch.checksum=alloc,load,contents,readonly  ../patch/output.o || die
-rm -f checksum.tmp
-cd "$TEMPDIR/patch"
-KPATCH_BUILD="$SRCDIR" KPATCH_NAME="$PATCHNAME" KBUILD_EXTRA_SYMBOLS="$SYMVERSFILE" make "O=$OBJDIR" >> "$LOGFILE" 2>&1 || die
 
-cp -f "$TEMPDIR/patch/kpatch-$PATCHNAME.ko" "$BASE" || die
+# Create checksum if using kpatch patching.
+if [[ $PATCHTYPE == "kpatch" ]]; then
+	md5sum ../patch/output.o | awk '{printf "%s\0", $1}' > checksum.tmp || die
+	objcopy --add-section .kpatch.checksum=checksum.tmp --set-section-flags .kpatch.checksum=alloc,load,contents,readonly  ../patch/output.o || die
+	rm -f checksum.tmp
+fi
+
+cd "$TEMPDIR/patch"
+KPATCH_TYPE="$PATCHTYPE" KPATCH_BUILD="$SRCDIR" KPATCH_NAME="$PATCHNAME" KBUILD_EXTRA_SYMBOLS="$SYMVERSFILE" make "O=$OBJDIR" >> "$LOGFILE" 2>&1 || die
+
+cp -f "$TEMPDIR/patch/$PATCHTYPE-$PATCHNAME.ko" "$BASE" || die
 
 [[ "$DEBUG" -eq 0 ]] && rm -f "$LOGFILE"
 

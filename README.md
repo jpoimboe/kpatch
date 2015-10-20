@@ -8,9 +8,6 @@ without having to wait for long-running tasks to complete, for users to log
 off, or for scheduled reboot windows.  It gives more control over uptime
 without sacrificing security or stability.
 
-kpatch is currently in active development.  For now, it should _not_ be used
-in production environments.
-
 **WARNING: Use with caution!  Kernel crashes, spontaneous reboots, and data loss
 may occur!**
 
@@ -28,7 +25,7 @@ Installation
 
 ###Prerequisites
 
-####Fedora 20
+####Fedora 21
 
 *NOTE: You'll need about 15GB of free disk space for the kpatch-build cache in
 `~/.kpatch` and for ccache.*
@@ -42,7 +39,7 @@ sudo yum install gcc kernel-devel elfutils elfutils-devel
 Install the dependencies for the "kpatch-build" command:
 
 ```bash
-sudo yum install rpmdevtools pesign yum-utils openssl wget
+sudo yum install rpmdevtools pesign yum-utils openssl wget numactl-devel
 sudo yum-builddep kernel
 sudo debuginfo-install kernel
 
@@ -68,7 +65,7 @@ Install the dependencies for the "kpatch-build" command:
 sudo yum-config-manager --enable rhel-7-server-optional-rpms
 sudo yum install rpmdevtools pesign yum-utils zlib-devel \
   binutils-devel newt-devel python-devel perl-ExtUtils-Embed \
-  audit-libs-devel numactl-devel pciutils-devel bison
+  audit-libs-devel numactl-devel pciutils-devel bison ncurses-devel
 
 sudo yum-builddep kernel
 sudo debuginfo-install kernel
@@ -397,12 +394,6 @@ function's arguments and stack, and "returns" to the new function.
 Limitations
 -----------
 
-- Patches to functions which are always on the stack of at least one
-  process in the system are not supported.  Examples: schedule(),
-  sys_poll(), sys_select(), sys_read(), sys_nanosleep().  Attempting to
-  apply such a patch will cause the insmod of the patch module to return
-  an error.
-
 - Patches which modify init functions (annotated with `__init`) are not
   supported.  kpatch-build will return an error if the patch attempts
   to do so.
@@ -430,6 +421,21 @@ Limitations
 
 Frequently Asked Questions
 --------------------------
+
+**Q. What's the relationship between kpatch and the upstream Linux live kernel
+patching component (livepatch)?**
+
+Starting with Linux 4.0, the Linux kernel has livepatch, which is a new
+converged live kernel patching framework.  Livepatch is similar in
+functionality to the kpatch core module, though it doesn't yet have all the
+features that kpatch does.
+
+kpatch-build already works with both livepatch and kpatch.  If your kernel has
+CONFIG\_LIVEPATCH enabled, it detects that and builds a patch module in the
+livepatch format.  Otherwise it builds a kpatch patch module.
+
+Soon the kpatch script will also support both patch module formats (TODO issue
+[#479](https://github.com/dynup/kpatch/issues/479)).
 
 **Q. Isn't this just a virus/rootkit injection framework?**
 
@@ -511,12 +517,6 @@ We hope to make the following changes to other projects:
 - kernel:
 	- ftrace improvements to close any windows that would allow a patch to
 	  be inadvertently disabled
-	- hot patch taint flag
-	- possibly the kpatch core module itself
-
-- crash:
-	- point it to where the patch modules and corresponding debug symbols
-	  live on the file system
 
 **Q: Is it possible to register a function that gets called atomically with
 `stop_machine` when the patch module loads and unloads?**
@@ -549,15 +549,25 @@ There could be a variety of reasons for this, such as:
 - The compiler decided to inline a changed function, resulting in the outer
   function getting recompiled.  This is common in the case where the inner
   function is static and is only called once.
-- The function uses a WARN() or WARN_ON() macro.  These macros embed the source
-  code line number (`__LINE__`) into an instruction.  If a function was changed
-  higher up in the file, it will affect the line numbers for all subsequent
-  WARN calls in the file, resulting in recompilation of their functions.  If
-  this happens to you, you can usually just ignore it, as patching a few extra
-  functions isn't typically a problem.  If it becomes a problem for whatever
-  reason, you can change the source patch to redefine the WARN macro for the
-  affected files, such that it hard codes the old line number instead of using
-  `__LINE__`, for example.
+
+**Q. How do I patch a function which is always on the stack of at least one
+task, such as schedule(), sys_poll(), sys_select(), sys_read(),
+sys_nanosleep(), etc?**
+
+- If you're sure it would be safe for the old function and the new function to
+  run simultaneously, use the `KPATCH_FORCE_UNSAFE` macro to skip the
+  activeness safety check for the function.  See `kmod/patch/kpatch-macros.h`
+  for more details.
+
+**Q. Are patching of kernel modules supported?**
+
+- Yes.
+
+**Q. Can you patch out-of-tree modules?**
+
+- Yes, though it's currently a bit of a manual process.  See this
+  [message](https://www.redhat.com/archives/kpatch/2015-June/msg00004.html) on
+  the kpatch mailing list for more information.
 
 
 Get involved

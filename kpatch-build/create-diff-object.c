@@ -78,6 +78,13 @@ enum loglevel {
 
 static enum loglevel loglevel = NORMAL;
 
+enum patchtype {
+	KPATCH,
+	LIVEPATCH
+};
+
+static enum patchtype patchtype = KPATCH;
+
 /*******************
  * Data structures
  * ****************/
@@ -133,7 +140,7 @@ struct rela {
 	struct list_head list;
 	GElf_Rela rela;
 	struct symbol *sym;
-	unsigned char type;
+	unsigned int type;
 	int addend;
 	int offset;
 	char *string;
@@ -1170,6 +1177,11 @@ void kpatch_correlate_static_local_variables(struct kpatch_elf *base,
 		if (bundled) {
 			sym->sec->twin = basesym->sec;
 			basesym->sec->twin = sym->sec;
+
+			if (sym->sec->rela && basesym->sec->rela) {
+				sym->sec->rela->twin = basesym->sec->rela;
+				basesym->sec->rela->twin = sym->sec->rela;
+			}
 		}
 	}
 }
@@ -1838,6 +1850,7 @@ void kpatch_regenerate_special_section(struct kpatch_elf *kelf,
 		/* no changed or global functions referenced */
 		sec->status = sec->base->status = SAME;
 		sec->include = sec->base->include = 0;
+		free(dest);
 		return;
 	}
 
@@ -2391,7 +2404,7 @@ void kpatch_create_dynamic_rela_sections(struct kpatch_elf *kelf,
 	list_for_each_entry(sec, &kelf->sections, list) {
 		if (!is_rela_section(sec))
 			continue;
-		if (!strcmp(sec->name, ".rela.kpatch.patches") ||
+		if (!strcmp(sec->name, ".rela.kpatch.funcs") ||
 		    !strcmp(sec->name, ".rela.kpatch.dynrelas"))
 			continue;
 		list_for_each_entry_safe(rela, safe, &sec->relas, list) {
@@ -2796,12 +2809,14 @@ void kpatch_write_output_elf(struct kpatch_elf *kelf, Elf *elf, char *outfile)
 struct arguments {
 	char *args[4];
 	int debug;
+	int livepatch;
 };
 
 static char args_doc[] = "original.o patched.o kernel-object output.o";
 
 static struct argp_option options[] = {
 	{"debug", 'd', 0, 0, "Show debug output" },
+	{"livepatch", 'l', 0, 0, "Use LIVEPATCH mode. Default is KPATCH." },
 	{ 0 }
 };
 
@@ -2815,6 +2830,9 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 	{
 		case 'd':
 			arguments->debug = 1;
+			break;
+		case 'l':
+			arguments->livepatch = 1;
 			break;
 		case ARGP_KEY_ARG:
 			if (state->arg_num >= 4)
@@ -2887,9 +2905,14 @@ int main(int argc, char *argv[])
 	char *hint = NULL, *name, *pos;
 
 	arguments.debug = 0;
+	arguments.livepatch = 0;
 	argp_parse (&argp, argc, argv, 0, 0, &arguments);
 	if (arguments.debug)
 		loglevel = DEBUG;
+
+	/* Detect livepatch mode */
+	if (arguments.livepatch)
+		patchtype = LIVEPATCH;
 
 	elf_version(EV_CURRENT);
 
@@ -2933,6 +2956,9 @@ int main(int argc, char *argv[])
 	kpatch_print_changes(kelf_patched);
 	kpatch_dump_kelf(kelf_patched);
 
+	kpatch_process_special_sections(kelf_patched);
+	kpatch_verify_patchability(kelf_patched);
+
 	if (!num_changed && !new_globals_exist) {
 		if (hooks_exist)
 			log_debug("no changed functions were found, but hooks exist\n");
@@ -2941,9 +2967,6 @@ int main(int argc, char *argv[])
 			return 3; /* 1 is ERROR, 2 is DIFF_FATAL */
 		}
 	}
-
-	kpatch_process_special_sections(kelf_patched);
-	kpatch_verify_patchability(kelf_patched);
 
 	/* this is destructive to kelf_patched */
 	kpatch_migrate_included_elements(kelf_patched, &kelf_out);

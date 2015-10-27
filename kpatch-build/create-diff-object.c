@@ -154,7 +154,9 @@ struct kpatch_elf {
 
 struct special_section {
 	char *name;
-	int (*group_size)(struct kpatch_elf *kelf, int offset);
+	int group_size;
+	int (*group_size_func)(struct kpatch_elf *kelf, int offset);
+	char *group_struct;
 };
 
 /*******************
@@ -1679,13 +1681,6 @@ void kpatch_reindex_elements(struct kpatch_elf *kelf)
 	}
 }
 
-
-int bug_table_group_size(struct kpatch_elf *kelf, int offset) { return 12; }
-int smp_locks_group_size(struct kpatch_elf *kelf, int offset) { return 4; }
-int parainstructions_group_size(struct kpatch_elf *kelf, int offset) { return 16; }
-int ex_table_group_size(struct kpatch_elf *kelf, int offset) { return 8; }
-int altinstructions_group_size(struct kpatch_elf *kelf, int offset) { return 12; }
-
 /*
  * The rela groups in the .fixup section vary in size.  The beginning of each
  * .fixup rela group is referenced by the __ex_table section. To find the size
@@ -1736,28 +1731,28 @@ int fixup_group_size(struct kpatch_elf *kelf, int offset)
 
 struct special_section special_sections[] = {
 	{
-		.name		= "__bug_table",
-		.group_size	= bug_table_group_size,
+		.name			= ".smp_locks",
+		.group_size		= 4,
 	},
 	{
-		.name		= ".smp_locks",
-		.group_size	= smp_locks_group_size,
+		.name			= "__bug_table",
+		.group_struct		= "bug_entry",
 	},
 	{
-		.name		= ".parainstructions",
-		.group_size	= parainstructions_group_size,
+		.name			= ".parainstructions",
+		.group_struct		= "paravirt_patch_site",
 	},
 	{
-		.name		= ".fixup",
-		.group_size	= fixup_group_size,
+		.name			= "__ex_table",
+		.group_struct		= "exception_table_entry",
 	},
 	{
-		.name		= "__ex_table",
-		.group_size	= ex_table_group_size,
+		.name			= ".altinstructions",
+		.group_struct		= "alt_instr",
 	},
 	{
-		.name		= ".altinstructions",
-		.group_size	= altinstructions_group_size,
+		.name			= ".fixup",
+		.group_size_func	= fixup_group_size,
 	},
 	{},
 };
@@ -1803,7 +1798,11 @@ void kpatch_regenerate_special_section(struct kpatch_elf *kelf,
 	dest_offset = 0;
 	for ( ; src_offset < sec->base->sh.sh_size; src_offset += group_size) {
 
-		group_size = special->group_size(kelf, src_offset);
+		if (special->group_size_func)
+			group_size = special->group_size_func(kelf, src_offset);
+		else
+			group_size = special->group_size;
+
 		include = should_keep_rela_group(sec, src_offset, group_size);
 
 		if (!include)
@@ -1976,7 +1975,42 @@ void kpatch_mark_ignored_functions_same(struct kpatch_elf *kelf)
 	}
 }
 
-void kpatch_process_special_sections(struct kpatch_elf *kelf)
+int kpatch_special_group_size(const char *objname, const char *group_struct)
+{
+	FILE *fp;
+	char cmd[256], str[8];
+	int size;
+
+	/*
+	 * hack alert - this is unfortunately much simpler than using libdwarf
+	 */
+	snprintf(cmd, 256,
+		 "readelf -wi %s | "
+		 " gawk --non-decimal-data "
+		 "'/%s/ {trynext = 1; next} "
+		 "trynext == 1 && /DW_AT_byte_size/ {printf(\"%%d\\n\", $4); exit} "
+		 "trynext == 1 {trynext = 0}'", objname, group_struct);
+
+	fp = popen(cmd, "r");
+
+	if (!fgets(str, 8, fp) || pclose(fp))
+		goto err;
+
+	size = atoi(str);
+	if (size <= 0 || size > 16)
+		goto err;
+
+	log_debug("sizeof(struct %s)=%d\n", group_struct, size);
+
+	return size;
+
+err:
+	ERROR("can't read %s struct size from %s", group_struct, objname);
+	return -1;
+}
+
+void kpatch_process_special_sections(struct kpatch_elf *kelf,
+				     const char *objname)
 {
 	struct special_section *special;
 	struct section *sec;
@@ -1991,6 +2025,10 @@ void kpatch_process_special_sections(struct kpatch_elf *kelf)
 		sec = sec->rela;
 		if (!sec)
 			continue;
+
+		if (special->group_struct)
+			special->group_size = kpatch_special_group_size(objname,
+									special->group_struct);
 
 		kpatch_regenerate_special_section(kelf, special, sec);
 	}
@@ -2891,11 +2929,15 @@ int main(int argc, char *argv[])
 	struct section *sec, *symtab;
 	struct symbol *sym;
 	char *hint = NULL, *name, *pos;
+	char *objname;
 
 	arguments.debug = 0;
 	argp_parse (&argp, argc, argv, 0, 0, &arguments);
+
 	if (arguments.debug)
 		loglevel = DEBUG;
+
+	objname = arguments.args[2];
 
 	elf_version(EV_CURRENT);
 
@@ -2939,7 +2981,7 @@ int main(int argc, char *argv[])
 	kpatch_print_changes(kelf_patched);
 	kpatch_dump_kelf(kelf_patched);
 
-	kpatch_process_special_sections(kelf_patched);
+	kpatch_process_special_sections(kelf_patched, objname);
 	kpatch_verify_patchability(kelf_patched);
 
 	if (!num_changed && !new_globals_exist) {
@@ -2972,10 +3014,10 @@ int main(int argc, char *argv[])
 		ERROR("FILE symbol not found in output. Stripped?\n");
 
 	/* create symbol lookup table */
-	lookup = lookup_open(arguments.args[2]);
+	lookup = lookup_open(objname);
 
 	/* extract module name (destructive to arguments.modulefile) */
-	name = basename(arguments.args[2]);
+	name = basename(objname);
 	if (!strncmp(name, "vmlinux-", 8))
 		name = "vmlinux";
 	else {

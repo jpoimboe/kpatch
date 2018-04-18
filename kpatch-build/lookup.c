@@ -40,7 +40,7 @@
 #include "log.h"
 
 struct object_symbol {
-	unsigned long value;
+	unsigned long addr;
 	unsigned long size;
 	char *name;
 	int type, bind;
@@ -200,7 +200,7 @@ static char *make_modname(char *modname)
 static void symtab_read(struct lookup_table *table, char *path)
 {
 	FILE *file;
-	long unsigned int value;
+	long unsigned int addr;
 	unsigned int i = 0;
 	int matched;
 	char line[256], name[256], size[16], type[16], bind[16], ndx[16];
@@ -210,7 +210,7 @@ static void symtab_read(struct lookup_table *table, char *path)
 
 	while (fgets(line, 256, file)) {
 		matched = sscanf(line, "%*s %lx %s %s %s %*s %s %s\n",
-				 &value, size, type, bind, ndx, name);
+				 &addr, size, type, bind, ndx, name);
 
 		if (matched == 5) {
 			name[0] = '\0';
@@ -234,7 +234,7 @@ static void symtab_read(struct lookup_table *table, char *path)
 
 	while (fgets(line, 256, file)) {
 		matched = sscanf(line, "%*s %lx %s %s %s %*s %s %s\n",
-				 &value, size, type, bind, ndx, name);
+				 &addr, size, type, bind, ndx, name);
 
 		if (matched == 5) {
 			name[0] = '\0';
@@ -246,7 +246,7 @@ static void symtab_read(struct lookup_table *table, char *path)
 		    !strcmp(type, "SECTION"))
 			continue;
 
-		table->obj_syms[i].value = value;
+		table->obj_syms[i].addr = addr;
 		table->obj_syms[i].size = strtoul(size, NULL, 0);
 
 		if (!strcmp(bind, "LOCAL")) {
@@ -418,7 +418,7 @@ int lookup_local_symbol(struct lookup_table *table, char *name,
 		return 1;
 
 	result->pos = pos;
-	result->value = sym->value;
+	result->addr = sym->addr;
 	result->size = sym->size;
 	return 0;
 }
@@ -433,7 +433,7 @@ int lookup_global_symbol(struct lookup_table *table, char *name,
 	for_each_obj_symbol(i, sym, table) {
 		if ((sym->bind == STB_GLOBAL || sym->bind == STB_WEAK) &&
 		    !strcmp(sym->name, name)) {
-			result->value = sym->value;
+			result->addr = sym->addr;
 			result->size = sym->size;
 			result->pos = 0; /* always 0 for global symbols */
 			return 0;

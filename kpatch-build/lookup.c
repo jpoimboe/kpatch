@@ -386,7 +386,7 @@ int lookup_local_symbol(struct lookup_table *table, char *name,
                         struct lookup_result *result)
 {
 	struct object_symbol *sym;
-	unsigned long pos = 0;
+	unsigned long sympos = 0;
 	int i, match = 0, in_file = 0;
 
 	if (!table->local_syms)
@@ -395,7 +395,7 @@ int lookup_local_symbol(struct lookup_table *table, char *name,
 	memset(result, 0, sizeof(*result));
 	for_each_obj_symbol(i, sym, table) {
 		if (sym->bind == STB_LOCAL && !strcmp(sym->name, name))
-			pos++;
+			sympos++;
 
 		if (table->local_syms == sym) {
 			in_file = 1;
@@ -417,7 +417,7 @@ int lookup_local_symbol(struct lookup_table *table, char *name,
 	if (!match)
 		return 1;
 
-	result->pos = pos;
+	result->sympos = sympos;
 	result->addr = sym->addr;
 	result->size = sym->size;
 	return 0;
@@ -435,7 +435,7 @@ int lookup_global_symbol(struct lookup_table *table, char *name,
 		    !strcmp(sym->name, name)) {
 			result->addr = sym->addr;
 			result->size = sym->size;
-			result->pos = 0; /* always 0 for global symbols */
+			result->sympos = 0; /* always 0 for global symbols */
 			return 0;
 		}
 	}

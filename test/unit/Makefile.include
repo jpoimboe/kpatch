@@ -46,15 +46,15 @@ clean:
 	@echo "BUILD $(TNAME)"
 	$(call check_all,$(TNAME).$(EXT_ORIG))
 	$(call check_all,$(TNAME).$(EXT_PATCHED))
-	$(CDO_ENV) $(CDO) $(TNAME).$(EXT_ORIG) $(TNAME).$(EXT_PATCHED) \
-		$(TNAME).$(EXT_ORIG) $@ /dev/null test_$(TNAME) $(MUTE_PASS)
+	$(CDO_ENV) $(CDO) $(TNAME).$(EXT_ORIG) $(TNAME).$(EXT_PATCHED) vmlinux \
+		vmlinux.symtab Module.symvers test_$(TNAME) $@ $(MUTE_PASS)
 
 %.$(EXT_OUTPUT): %.$(EXT_ORIG) %.$(EXT_FAIL) $(CDO)
 	@echo "BUILD $(TNAME)-FAIL"
 	$(call check_all,$(TNAME).$(EXT_ORIG))
 	$(call check_all,$(TNAME).$(EXT_FAIL))
-	! $(CDO_ENV) $(CDO) $(TNAME).$(EXT_ORIG) $(TNAME).$(EXT_FAIL) \
-		$(TNAME).$(EXT_ORIG) $@ /dev/null test_$(TNAME) $(MUTE_FAIL)
+	! $(CDO_ENV) $(CDO) $(TNAME).$(EXT_ORIG) $(TNAME).$(EXT_FAIL) vmlinux \
+		vmlinux.symtab Module.symvers test_$(TNAME) $@ $(MUTE_FAIL)
 # Expecting to fail, thus create output file manually so we won't rerun the
 # test without clean
 	@touch $@

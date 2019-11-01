@@ -2590,10 +2590,10 @@ static void kpatch_create_patches_sections(struct kpatch_elf *kelf,
 			continue;
 
 		if (sym->bind == STB_LOCAL) {
-			if (lookup_local_symbol(table, sym->name, &result))
+			if (!lookup_local_symbol(table, sym->name, &result))
 				ERROR("lookup_local_symbol %s", sym->name);
 		} else {
-			if (lookup_global_symbol(table, sym->name, &result))
+			if (!lookup_global_symbol(table, sym->name, &result))
 				ERROR("lookup_global_symbol %s", sym->name);
 		}
 
@@ -2747,7 +2747,7 @@ static void kpatch_create_intermediate_sections(struct kpatch_elf *kelf,
 	struct kpatch_relocation *krelas;
 	struct lookup_result result;
 	char *sym_objname;
-	int ret, vmlinux, external;
+	int vmlinux, external;
 
 	vmlinux = !strcmp(objname, "vmlinux");
 
@@ -2859,9 +2859,8 @@ static void kpatch_create_intermediate_sections(struct kpatch_elf *kelf,
 
 			if (rela->sym->bind == STB_LOCAL) {
 				/* An unchanged local symbol */
-				ret = lookup_local_symbol(table,
-					rela->sym->name, &result);
-				if (ret)
+				if (!lookup_local_symbol(table, rela->sym->name,
+							 &result))
 					ERROR("lookup_local_symbol %s needed for %s",
 					      rela->sym->name, sec->base->name);
 
@@ -2901,8 +2900,8 @@ static void kpatch_create_intermediate_sections(struct kpatch_elf *kelf,
 				 * symbol is defined in another object in the
 				 * patch module.
 				 */
-				if (lookup_global_symbol(table, rela->sym->name,
-							 &result))
+				if (!lookup_global_symbol(table, rela->sym->name,
+							  &result))
 					continue;
 			} else {
 				/*
@@ -2910,8 +2909,8 @@ static void kpatch_create_intermediate_sections(struct kpatch_elf *kelf,
 				 * a global symbol.  Try to find the symbol in
 				 * the module being patched.
 				 */
-				if (lookup_global_symbol(table, rela->sym->name,
-							 &result)) {
+				if (!lookup_global_symbol(table, rela->sym->name,
+							  &result)) {
 					/*
 					 * Not there, see if the symbol is
 					 * exported, and set sym_objname to the

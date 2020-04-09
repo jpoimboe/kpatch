@@ -76,6 +76,8 @@ enum subsection {
 
 enum loglevel loglevel = NORMAL;
 
+bool KLP_ARCH;
+
 /*******************
  * Data structures
  * ****************/
@@ -2114,25 +2116,99 @@ static struct special_section special_sections[] = {
 	{},
 };
 
-static int should_keep_rela_group(struct section *sec, unsigned int start,
-		unsigned int size)
+/*
+ * On older kernels, jump labels aren't supported at all.  Error out when they
+ * occur in a replacement function, with the exception of tracepoints and
+ * dynamic debug printks.  An inert tracepoint or printk is harmless enough,
+ * but a broken jump label can cause unexpected behavior.
+ *
+ * On newer (5.8+) kernels, jump labels are supported in the case where the
+ * corresponding static key lives in vmlinux.  That's because such kernels
+ * apply vmlinux-specific .klp.rela sections at the same time (in the klp
+ * module load) as normal relas, before jump label init.  On the other hand,
+ * jump labels based on static keys which are defined in modules aren't
+ * supported, because late module patching can result in the klp relas getting
+ * applied *after* the klp module's jump label init.
+ */
+static bool should_keep_jump_label(const char *objname, struct section *sec,
+				   unsigned int group_offset,
+				   unsigned int group_size)
+{
+	struct rela *code, *key, *rela;
+	bool tracepoint = false, dynamic_debug = false;
+	bool vmlinux = !strcmp(objname, "vmlinux");
+	int i = 0;
+
+	/*
+	 * Here we hard-code knowledge about the contents of the jump_entry
+	 * struct.  It has three fields: code, target, and key.  Each field has
+	 * a relocation associated with it.
+	 */
+	list_for_each_entry(rela, &sec->relas, list) {
+		if (rela->offset >= group_offset &&
+		    rela->offset < group_offset + group_size) {
+			if (i == 0)
+				code = rela;
+			else if (i == 2)
+				key = rela;
+			i++;
+		}
+	}
+
+	if (i != 3)
+		ERROR("BUG: __jump_table has an unexpected format");
+
+	/* Inert tracepoints are harmless */
+	if (!strncmp(key->sym->name, "__tracepoint_", 13))
+		tracepoint = true;
+
+	/* Inert dynamic debug printks are harmless */
+	if (is_dynamic_debug_symbol(key->sym))
+		dynamic_debug = true;
+
+	if (KLP_ARCH) {
+		if (tracepoint || dynamic_debug)
+			return false;
+		ERROR("Found a jump label at %s()+0x%lx, using key %s.  Jump labels aren't supported with this kernel.  Use static_key_enabled() instead.",
+		      code->sym->name, code->addend, key->sym->name);
+	}
+
+	if (!vmlinux) {
+		if (tracepoint || dynamic_debug)
+			return false;
+		ERROR("Found a jump label at %s()+0x%lx, using key %s, which is defined in a module.  Use static_key_enabled() instead.",
+		      code->sym->name, code->addend, key->sym->name);
+	}
+
+	/* In newer kernels, vmlinux-specific jump label entries are allowed */
+	return true;
+}
+
+static bool should_keep_rela_group(const char *objname, struct section *sec,
+				   unsigned int offset, unsigned int size)
 {
 	struct rela *rela;
-	int found = 0;
+	bool found = false;
 
 	/* check if any relas in the group reference any changed functions */
 	list_for_each_entry(rela, &sec->relas, list) {
-		if (rela->offset >= start &&
-		    rela->offset < start + size &&
+		if (rela->offset >= offset &&
+		    rela->offset < offset + size &&
 		    rela->sym->type == STT_FUNC &&
 		    rela->sym->sec->include) {
-			found = 1;
+			found = true;
 			log_debug("new/changed symbol %s found in special section %s\n",
 				  rela->sym->name, sec->name);
 		}
 	}
 
-	return found;
+	if (!found)
+		return false;
+
+	if (!strcmp(sec->name, ".rela__jump_table"))
+		return should_keep_jump_label(objname, sec, offset, size);
+
+	return true;
 }
 
 /*
@@ -2161,13 +2237,13 @@ static void kpatch_update_ex_table_addend(struct kpatch_elf *kelf,
 }
 
 static void kpatch_regenerate_special_section(struct kpatch_elf *kelf,
+					      const char *objname,
 					      struct special_section *special,
 					      struct section *sec)
 {
 	struct rela *rela, *safe;
 	char *src, *dest;
-	unsigned int group_size, src_offset, dest_offset, include;
-	int jump_table = !strcmp(special->name, "__jump_table");
+	unsigned int group_size, src_offset, dest_offset;
 
 	LIST_HEAD(newrelas);
 
@@ -2202,53 +2278,8 @@ static void kpatch_regenerate_special_section(struct kpatch_elf *kelf,
 		if (src_offset + group_size > sec->base->sh.sh_size)
 			group_size = (unsigned int)(sec->base->sh.sh_size - src_offset);
 
-		include = should_keep_rela_group(sec, src_offset, group_size);
-
-		if (!include)
+		if (!should_keep_rela_group(objname, sec, src_offset, group_size))
 			continue;
-
-		/*
-		 * Jump labels (aka static keys or static branches) aren't
-		 * actually supported for the time being.  Warn on all
-		 * non-tracepoint jump labels when they occur in a replacement
-		 * function.  An inert tracepoint is harmless enough, but a
-		 * broken static key can cause unexpected behavior.
-		 *
-		 * Here we hard-code knowledge about the contents of the
-		 * jump_label struct.  It has three fields: code, target, and
-		 * key.
-		 */
-		if (jump_table) {
-			struct rela *code, *key;
-			int i = 0;
-
-			list_for_each_entry(rela, &sec->relas, list) {
-				if (rela->offset >= src_offset &&
-				    rela->offset < src_offset + group_size) {
-					if (i == 0)
-						code = rela;
-					else if (i == 2)
-						key = rela;
-					i++;
-				}
-			}
-
-			if (i != 3)
-				ERROR("BUG: __jump_table has an unexpected format");
-
-			/* inert tracepoints are harmless */
-			if (!strncmp(key->sym->name, "__tracepoint_", 13))
-				continue;
-
-			/* inert dynamic debug printks are harmless */
-			if (is_dynamic_debug_symbol(key->sym))
-				continue;
-
-			ERROR("Found a jump label at %s()+0x%lx, using key %s.  Jump labels aren't currently supported.  Use static_key_enabled() instead.",
-			      code->sym->name, code->addend, key->sym->name);
-
-			continue;
-		}
 
 		/*
 		 * Copy all relas in the group.  It's possible that the relas
@@ -2266,7 +2297,6 @@ static void kpatch_regenerate_special_section(struct kpatch_elf *kelf,
 				rela->rela.r_offset = rela->offset;
 
 				rela->sym->include = 1;
-
 
 				if (!strcmp(special->name, ".fixup"))
 					kpatch_update_ex_table_addend(kelf, special,
@@ -2576,6 +2606,9 @@ static void kpatch_create_kpatch_arch_section(struct kpatch_elf *kelf, char *obj
 	struct rela *rela;
 	int nr, index = 0;
 
+	if (!KLP_ARCH)
+		return;
+
 	nr = sizeof(special_sections) / sizeof(special_sections[0]);
 	karch_sec = create_section_pair(kelf, ".kpatch.arch", sizeof(struct kpatch_arch), nr);
 
@@ -2616,7 +2649,8 @@ static void kpatch_create_kpatch_arch_section(struct kpatch_elf *kelf, char *obj
 	karch_sec->sh.sh_size = karch_sec->data->d_size;
 }
 
-static void kpatch_process_special_sections(struct kpatch_elf *kelf)
+static void kpatch_process_special_sections(struct kpatch_elf *kelf,
+					    const char *objname)
 {
 	struct special_section *special;
 	struct section *sec;
@@ -2626,16 +2660,12 @@ static void kpatch_process_special_sections(struct kpatch_elf *kelf)
 
 	for (special = special_sections; special->name; special++) {
 		sec = find_section_by_name(&kelf->sections, special->name);
-		if (!sec)
+		if (!sec || !sec->rela)
 			continue;
 
-		sec = sec->rela;
-		if (!sec)
-			continue;
+		kpatch_regenerate_special_section(kelf, objname, special, sec->rela);
 
-		kpatch_regenerate_special_section(kelf, special, sec);
-
-		if (!strcmp(special->name, ".altinstructions") && sec->base->include)
+		if (!strcmp(special->name, ".altinstructions") && sec->include)
 			altinstr = 1;
 	}
 
@@ -2670,25 +2700,28 @@ static void kpatch_process_special_sections(struct kpatch_elf *kelf)
 		}
 	}
 
-	/*
-	 * The following special sections aren't supported, so make sure we
-	 * don't ever try to include them.  Otherwise the kernel will see the
-	 * jump table during module loading and get confused.  Generally it
-	 * should be safe to exclude them, it just means that you can't modify
-	 * jump labels and enable tracepoints in a patched function.
-	 */
-	list_for_each_entry(sec, &kelf->sections, list) {
-		if (strcmp(sec->name, "__jump_table") &&
-		    strcmp(sec->name, "__tracepoints") &&
-		    strcmp(sec->name, "__tracepoints_ptrs") &&
-		    strcmp(sec->name, "__tracepoints_strings"))
-			continue;
+	if (KLP_ARCH) {
+		/*
+		 * The following special sections aren't supported with older
+		 * kernels, so make sure we don't ever try to include them.
+		 * Otherwise the kernel will see the jump table during module
+		 * loading and get confused.  Generally it should be safe to
+		 * exclude them, it just means that you can't modify jump
+		 * labels and enable tracepoints in a patched function.
+		 */
+		list_for_each_entry(sec, &kelf->sections, list) {
+			if (strcmp(sec->name, "__jump_table") &&
+			    strcmp(sec->name, "__tracepoints") &&
+			    strcmp(sec->name, "__tracepoints_ptrs") &&
+			    strcmp(sec->name, "__tracepoints_strings"))
+				continue;
 
-		sec->status = SAME;
-		sec->include = 0;
-		if (sec->rela) {
-			sec->rela->status = SAME;
-			sec->rela->include = 0;
+			sec->status = SAME;
+			sec->include = 0;
+			if (sec->rela) {
+				sec->rela->status = SAME;
+				sec->rela->include = 0;
+			}
 		}
 	}
 
@@ -3030,9 +3063,9 @@ static void kpatch_create_intermediate_sections(struct kpatch_elf *kelf,
 	struct kpatch_symbol *ksyms;
 	struct kpatch_relocation *krelas;
 	struct lookup_result symbol;
-	bool vmlinux;
-
-	vmlinux = !strcmp(objname, "vmlinux");
+	bool special;
+	bool vmlinux = !strcmp(objname, "vmlinux");
+	struct special_section *s;
 
 	/* count rela entries that need to be dynamic */
 	nr = 0;
@@ -3092,9 +3125,32 @@ static void kpatch_create_intermediate_sections(struct kpatch_elf *kelf,
 		    !strcmp(sec->name, ".rela.kpatch.relocations") ||
 		    !strcmp(sec->name, ".rela.kpatch.symbols"))
 			continue;
+
+		special = false;
+		for (s = special_sections; s->name; s++)
+			if (!strcmp(sec->base->name, s->name))
+				special = true;
+
 		list_for_each_entry_safe(rela, safe, &sec->relas, list) {
 			if (!rela->need_dynrela)
 				continue;
+
+			/*
+			 * Starting with Linux 5.8, .klp.arch sections are no
+			 * longer supported: now that vmlinux relocations are
+			 * written early, before paravirt and alternative
+			 * module init, .klp.arch is technically not needed.
+			 *
+			 * For sanity we just need to make sure that there are
+			 * no .klp.rela.{module}.{section} sections for special
+			 * sections.  Otherwise there might be ordering issues,
+			 * if the .klp.relas are applied after the module
+			 * special section init code (e.g., apply_paravirt)
+			 * runs due to late module patching.
+			 */
+			if (!KLP_ARCH && !vmlinux && special)
+				ERROR("unsupported dynrela reference to symbol '%s' in module-specific special section '%s'",
+				      rela->sym->name, sec->base->name);
 
 			if (!lookup_symbol(table, rela->sym->name, &symbol))
 				ERROR("can't find symbol '%s' in symbol table",
@@ -3460,13 +3516,14 @@ static void kpatch_no_sibling_calls_ppc64le(struct kpatch_elf *kelf)
 
 struct arguments {
 	char *args[7];
-	int debug;
+	bool debug, klp_arch;
 };
 
 static char args_doc[] = "original.o patched.o parent-name parent-symtab Module.symvers patch-module-name output.o";
 
 static struct argp_option options[] = {
-	{"debug", 'd', NULL, 0, "Show debug output" },
+	{"debug",	'd', NULL, 0, "Show debug output" },
+	{"klp-arch",	'a', NULL, 0, "Kernel supports .klp.arch section" },
 	{ NULL }
 };
 
@@ -3480,6 +3537,9 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 	{
 		case 'd':
 			arguments->debug = 1;
+			break;
+		case 'a':
+			arguments->klp_arch = 1;
 			break;
 		case ARGP_KEY_ARG:
 			if (state->arg_num >= 7)
@@ -3512,10 +3572,12 @@ int main(int argc, char *argv[])
 	char *parent_symtab, *mod_symvers, *patch_name, *output_obj;
 	struct sym_compare_type *base_locals, *sym_comp;
 
-	arguments.debug = 0;
+	memset(&arguments, 0, sizeof(arguments));
 	argp_parse (&argp, argc, argv, 0, NULL, &arguments);
 	if (arguments.debug)
 		loglevel = DEBUG;
+	if (arguments.klp_arch)
+		KLP_ARCH = true;
 
 	elf_version(EV_CURRENT);
 
@@ -3583,7 +3645,7 @@ int main(int argc, char *argv[])
 	new_globals_exist = kpatch_include_new_globals(kelf_patched);
 	kpatch_include_debug_sections(kelf_patched);
 
-	kpatch_process_special_sections(kelf_patched);
+	kpatch_process_special_sections(kelf_patched, parent_name);
 
 	kpatch_print_changes(kelf_patched);
 	kpatch_dump_kelf(kelf_patched);

@@ -57,6 +57,7 @@ declare -a PATCH_LIST
 APPLIED_PATCHES=0
 OOT_MODULE=
 KLP_REPLACE=1
+TARGETS="vmlinux modules"
 
 GCC="${CROSS_COMPILE:-}gcc"
 CLANG="${CROSS_COMPILE:-}clang"
@@ -329,6 +330,40 @@ clang_version_check() {
 		echo "kernel version:   $kclangver"
 		echo "Install the matching clang version (recommended) or use --skip-compiler-check"
 		echo "to skip the version matching enforcement (not recommended)"
+		return 1
+	fi
+
+	return
+}
+
+# Compare the symbol tables between the user-provided vmlinux and the "orig"
+# built one.  They should be (mostly) identical unless the user provided bad
+# input somewhere.
+vmlinux_sanity_check() {
+	[[ -n "$SKIP_VMLINUX_CHECK" ]] && return
+	[[ "$TARGETS" =~ vmlinux ]] || return
+
+	# The symbol tables should be (mostly) identical.  Adding
+	# -ffunction-sections -fdata-sections does change a few things:
+	#   1) there are a bunch more section symbols
+	#   2) for some reason the .LC symbols get shuffled a bit
+
+	"$READELF" -Ws "$VMLINUX" | \
+		grep -v SECTION	  | \
+		awk '{print $8}'  | \
+		grep -v '.LC' >	    \
+		"$TEMPDIR/syms.orig1"
+
+	"$READELF" -Ws vmlinux    | \
+		grep -v SECTION	  | \
+		awk '{print $8}'  | \
+		grep -v '.LC' >     \
+		"$TEMPDIR/syms.orig2"
+
+	if ! diff "$TEMPDIR/syms.orig1" "$TEMPDIR/syms.orig2" &> /dev/null; then
+		warn "Unexpected vmlinux symbol table mismatch!"
+		echo "Make sure the current code and toolchains match the build environment of the original vmlinux"
+		echo "or use --skip-vmlinux-check to skip this check"
 		return 1
 	fi
 
@@ -761,6 +796,10 @@ while [[ $# -gt 0 ]]; do
 		echo "WARNING: Skipping compiler version matching check (not recommended)"
 		SKIPCOMPILERCHECK=1
 		;;
+	--skip-vmlinux-check)
+		echo "WARNING: Skipping vmlinux symbol table sanity check"
+		SKIP_VMLINUX_CHECK=1
+		;;
 	*)
 		[[ "$1" = "--" ]] && shift && continue
 		[[ ! -f "$1" ]] && die "patch file '$1' not found"
@@ -842,8 +881,6 @@ if [[ "$ARCHVERSION" =~ - ]]; then
 	KREL="${KREL%.*}"
 fi
 [[ "$ARCHVERSION" =~ .el7a. ]] && ALT="-alt"
-
-[[ -z "$TARGETS" ]] && TARGETS="vmlinux modules"
 
 # Don't check external file.
 # shellcheck disable=SC1090
@@ -1122,6 +1159,8 @@ fi
 # $TARGETS used as list, no quotes.
 # shellcheck disable=SC2086
 make "${MAKEVARS[@]}" "-j$CPUS" $TARGETS 2>&1 | logger || die
+
+vmlinux_sanity_check || die
 
 # Save original module symvers
 cp -f "$BUILDDIR/Module.symvers" "$TEMPDIR/Module.symvers" || die

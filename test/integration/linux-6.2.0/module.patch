@@ -49,8 +49,8 @@ index 90a77cd3ebad..f65df90ae8e1 100644
 +	/* Test static branches: */
 +	static DEFINE_STATIC_KEY_TRUE(kpatch_key);
 +
-+       if (static_branch_unlikely(&memcg_kmem_enabled_key))
-+		printk("kpatch: memcg_kmem_enabled_key\n");
++       if (static_branch_unlikely(&memcg_kmem_online_key))
++		printk("kpatch: memcg_kmem_online_key\n");
 +
 +	BUG_ON(!static_branch_likely(&kpatch_key));
 +	static_branch_disable(&kpatch_key);

@@ -16,26 +16,24 @@ See "Exported symbol versioning" of the patch author guide for more
 detail.
 
 ---
- drivers/base/core.c    | 2 ++
- drivers/usb/core/usb.c | 2 ++
- 2 files changed, 4 insertions(+)
-
-diff -Nupr src.orig/drivers/base/core.c src/drivers/base/core.c
---- src.orig/drivers/base/core.c	2023-01-12 11:20:06.403705933 -0500
-+++ src/drivers/base/core.c	2023-01-12 11:21:27.466186559 -0500
+diff --git a/drivers/base/core.c b/drivers/base/core.c
+index b93f3c5716ae..3bb9dd5d8d74 100644
+--- a/drivers/base/core.c
++++ b/drivers/base/core.c
 @@ -36,6 +36,8 @@
  #include "physical_location.h"
  #include "power/power.h"
  
 +#include <linux/blktrace_api.h>
 +
- #ifdef CONFIG_SYSFS_DEPRECATED
- #ifdef CONFIG_SYSFS_DEPRECATED_V2
- long sysfs_deprecated = 1;
-diff -Nupr src.orig/drivers/usb/core/usb.c src/drivers/usb/core/usb.c
---- src.orig/drivers/usb/core/usb.c	2023-01-12 11:20:06.490706448 -0500
-+++ src/drivers/usb/core/usb.c	2023-01-12 11:21:27.468186571 -0500
-@@ -697,6 +697,8 @@ EXPORT_SYMBOL_GPL(usb_alloc_dev);
+ /* Device links support. */
+ static LIST_HEAD(deferred_sync);
+ static unsigned int defer_sync_state_count = 1;
+diff --git a/drivers/usb/core/usb.c b/drivers/usb/core/usb.c
+index a0c432b14b20..da6de67451f0 100644
+--- a/drivers/usb/core/usb.c
++++ b/drivers/usb/core/usb.c
+@@ -761,6 +761,8 @@ EXPORT_SYMBOL_GPL(usb_alloc_dev);
   */
  struct usb_device *usb_get_dev(struct usb_device *dev)
  {
